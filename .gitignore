@@ -1,0 +1,25 @@
+# --- Build artifacts (regenerable by PyInstaller) ---
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# --- Personal game data (private; regenerable from encrypted saves) ---
+plaintext/
+wingspan_archive.csv
+wingspan_games.csv
+wingspan_players.csv
+WingspanArchive.html
+
+# --- Logs / temp / QA scratch ---
+*-log.txt
+WingspanViewer-log.txt
+test_*.html
+frame_*.png
+test.html
+
+# --- Reverse-engineering artifacts (large binaries, crack already done) ---
+dump/
+dotnet-x86/
+mod/

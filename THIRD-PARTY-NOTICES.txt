@@ -1,0 +1,114 @@
+THIRD-PARTY NOTICES
+Wingspan Preserve Archive Viewer
+===============================================================================
+
+This application is distributed under the GNU General Public License v3.0 (see
+LICENSE). It bundles or builds upon the components listed below. Each remains the
+property of its respective copyright holders and is used under its own license.
+
+
+-------------------------------------------------------------------------------
+1. Wingsearch  --  GPL-3.0
+-------------------------------------------------------------------------------
+   Bird illustrations, card data, and game iconography.
+   Copyright (c) navarog and Wingsearch contributors
+   https://github.com/navarog/wingsearch
+
+   Used files: card data from master.json; bird illustrations from
+   cards/birds-diffusion/ ; food, nest, habitat and token icons.
+
+   The illustrations are AI-generated "Unofficial Fan Art" from that project and
+   are NOT the official artwork of the Wingspan board game or video game.
+
+   Modifications made in this project: images resized to a 340px maximum and
+   re-encoded for bundling; card records joined to in-game bird IDs by normalized
+   common name; a subset of fields extracted into bird_data.json (victory points,
+   food cost, habitats, nest type, egg limit, wingspan, scientific name, power
+   colour, power text).
+
+   Because this material is GPLv3, the application as a whole is distributed
+   under the GPLv3, and complete corresponding source is available at the project
+   repository.
+
+
+-------------------------------------------------------------------------------
+2. Python  --  Python Software Foundation License 2.0
+-------------------------------------------------------------------------------
+   Copyright (c) 2001-2026 Python Software Foundation. All Rights Reserved.
+   https://docs.python.org/3/license.html
+   The CPython runtime is embedded in the packaged executable.
+
+
+-------------------------------------------------------------------------------
+3. pywebview  --  BSD 3-Clause License
+-------------------------------------------------------------------------------
+   Copyright (c) 2014-2026 Roman Sirokov and contributors
+   https://github.com/r0x0r/pywebview
+   Provides the native application window.
+
+
+-------------------------------------------------------------------------------
+4. pythonnet  --  MIT License
+-------------------------------------------------------------------------------
+   Copyright (c) 2006-2026 the contributors of the Python.NET project
+   https://github.com/pythonnet/pythonnet
+
+
+-------------------------------------------------------------------------------
+5. clr-loader  --  MIT License
+-------------------------------------------------------------------------------
+   Copyright (c) 2020-2026 Benedikt Reinartz and contributors
+   https://github.com/pythonnet/clr-loader
+
+
+-------------------------------------------------------------------------------
+6. PyCryptodome  --  BSD 2-Clause License / Public Domain (dual)
+-------------------------------------------------------------------------------
+   Copyright (c) 2014-2026 Helder Eijs and contributors
+   https://github.com/Legrandin/pycryptodome
+   Optional acceleration for save decryption. The application also contains a
+   pure-Python fallback implementation, so it runs without this library.
+
+
+-------------------------------------------------------------------------------
+7. cryptography  --  Apache License 2.0 / BSD 3-Clause (dual)
+-------------------------------------------------------------------------------
+   Copyright (c) Individual contributors to the pyca/cryptography project
+   https://github.com/pyca/cryptography
+   Pulled in as a transitive dependency of the packaging toolchain.
+
+
+-------------------------------------------------------------------------------
+8. setuptools  --  MIT License
+-------------------------------------------------------------------------------
+   Copyright (c) Python Packaging Authority
+   https://github.com/pypa/setuptools
+
+
+-------------------------------------------------------------------------------
+9. PyInstaller (bootloader)  --  GPL 2.0 with a linking exception
+-------------------------------------------------------------------------------
+   Copyright (c) 2005-2026, PyInstaller Development Team
+   https://github.com/pyinstaller/pyinstaller
+   The bootloader stub is embedded in the packaged executable. PyInstaller's
+   licensing exception permits bundling regardless of the licence of the packaged
+   application.
+
+
+-------------------------------------------------------------------------------
+10. Microsoft Edge WebView2 Runtime  --  NOT bundled
+-------------------------------------------------------------------------------
+   The application renders its interface using the WebView2 runtime that ships
+   with Windows. It is a Microsoft system component, is not redistributed here,
+   and remains subject to Microsoft's own terms.
+
+
+===============================================================================
+GAME CONTENT
+===============================================================================
+"Wingspan" is a board game by Stonemaier Games (designed by Elizabeth Hargrave);
+the digital adaptation is by Monster Couch. Bird names, card powers, card data and
+game iconography are the intellectual property of their respective owners. This is
+an unofficial fan tool, is not affiliated with or endorsed by either company, is
+distributed free of charge, and reads only save data already present on the user's
+own computer.
