@@ -16,6 +16,7 @@ Run it:
     python wingspan_viewer.py                 # opens the dashboard in a window
     python wingspan_viewer.py --html           # just write the HTML, don't open a window
     python wingspan_viewer.py "<remote folder>"  # point at a specific save folder
+                                                 # (also: a copied phone save folder)
 
 When packaged as wingspan_viewer.exe, friends just double-click it.
 
@@ -23,7 +24,7 @@ If a future Wingspan update changes the save encryption, the DES_KEY below is
 the only thing that would need refreshing.
 """
 
-import os, sys, json, base64, datetime, glob, argparse, webbrowser, tempfile
+import os, re, sys, json, base64, datetime, glob, argparse, webbrowser, tempfile
 
 def resource_path(name):
     """Path to a bundled data file, whether running from source or a PyInstaller exe."""
@@ -174,11 +175,25 @@ except Exception:
     FAST = False
 
 def decrypt_save(raw):
+    """Return the save's JSON bytes, or None if this isn't a Wingspan save.
+
+    Accepts three shapes:
+      * Steam/PC: base64 -> "V@1H@11@N<v>" header -> DES-CBC. The last header byte is a
+        format version (current saves say "4", matching GameStateVersion). Only the first
+        8 bytes are used as the IV, so any version digit decrypts the same way; we used to
+        demand an exact "N4" and silently dropped anything else.
+      * Mobile (Android/iOS): plain, unencrypted JSON on disk.
+    """
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8", "replace")
+    plain = raw.lstrip(b"\xef\xbb\xbf \t\r\n")
+    if plain[:1] == b"{":
+        return plain
     try:
         blob = base64.b64decode(raw)
     except Exception:
         return None
-    if blob[:10] != HEADER:
+    if blob[:9] != HEADER[:9] or len(blob) < 18:
         return None
     iv = blob[:8]
     body = blob[10:]
@@ -250,7 +265,7 @@ def habitat_stats(p):
         out[name] = {"birds": len(birds), "eggs": eggs, "cached": cached, "tucked": tucked}
     return out, bird_list
 
-def normalize_game(d, mtime, owner_sid, kind):
+def normalize_game(d, when, owner_sid, kind):
     scores = {s.get("_pid"): s for s in d.get("Scores", [])}
     players = {}
     for p in d.get("Players", []):
@@ -302,7 +317,7 @@ def normalize_game(d, mtime, owner_sid, kind):
 
     return {
         "id": d.get("MatchId") or "",
-        "date": datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%dT%H:%M:%S"),
+        "date": when.strftime("%Y-%m-%dT%H:%M:%S"),
         "kind": kind,                                   # "solo" | "online"
         "matchType": d.get("MatchType", ""),
         "gameMode": d.get("gameMode", ""),
@@ -314,45 +329,149 @@ def normalize_game(d, mtime, owner_sid, kind):
         "ownerIndex": owner_index,
     }
 
-def load_all_games(remotes):
-    games = {}          # dedupe key -> (game, mtime, finished)
+# ---- game dates --------------------------------------------------------------
+# File modification times are NOT reliable dates: a Steam Cloud re-download (new PC,
+# reinstall, sync conflict) restamps every file with the download date, collapsing years
+# of games onto one day. The filename is reliable: "local_<n>" is a Windows FILETIME
+# (100 ns ticks since 1601-01-01 UTC) taken when the game started. Online games (UUID
+# names) get their date from the game's own archive index ("Settings" file), which
+# records when each game was played. mtime is only the last resort.
+_FILETIME_RE = re.compile(r"^local_(\d{17,19})$")
+
+def date_from_filename(name):
+    m = _FILETIME_RE.match(name)
+    if not m:
+        return None
+    try:
+        utc = (datetime.datetime(1601, 1, 1, tzinfo=datetime.timezone.utc)
+               + datetime.timedelta(microseconds=int(m.group(1)) // 10))
+    except (OverflowError, ValueError):
+        return None
+    if not (2019 <= utc.year <= datetime.datetime.now().year + 1):   # Wingspan PC: 2020+
+        return None
+    return utc.astimezone().replace(tzinfo=None)                       # local wall time
+
+def load_archive_index(folder):
+    """MatchId -> played date (or None) from the game's own archive index ("Settings").
+
+    The in-game Preserve Archive list is driven by this index, not by the files, so it
+    also tells us when the game lists games whose save files aren't in this folder.
+    PRIVACY: Settings also holds account credentials; we read ONLY the two game lists.
+    """
+    fp = os.path.join(folder, "Settings")
+    if not os.path.isfile(fp):
+        return {}
+    try:
+        pt = decrypt_save(open(fp, "rb").read())
+        s = json.loads(pt.decode("utf-8"))
+    except Exception:
+        return {}
+    out = {}
+    for lst in ("GameSaves", "ArchivedGameSaves"):
+        for e in (s.get(lst) or []):
+            if not isinstance(e, dict) or not e.get("MatchId"):
+                continue
+            when = None
+            try:
+                ts = float(e.get("GamePlayedDate") or 0)
+                if ts > 1.5e9:                                   # after 2017; 0 = not set
+                    when = datetime.datetime.fromtimestamp(ts)
+            except Exception:
+                pass
+            out[str(e["MatchId"])] = when
+    return out
+
+# ---- finding save files ------------------------------------------------------
+MAX_SAVE_BYTES = 8 * 1024 * 1024
+_B64_HEADER = b"VkAxSEAxMUBO"      # base64 of the invariant "V@1H@11@N" header prefix
+
+def _looks_like_save(fp):
+    try:
+        if os.path.getsize(fp) > MAX_SAVE_BYTES:
+            return False
+        with open(fp, "rb") as f:
+            head = f.read(64).lstrip(b"\xef\xbb\xbf \t\r\n")
+    except Exception:
+        return False
+    return head[:1] == b"{" or head.startswith(_B64_HEADER)
+
+def save_folders(root, deep):
+    """Folders to read. A Steam 'remote' folder is read as-is; a folder the user picked
+    (or dragged on) is also searched a few levels down, so picking a parent folder or a
+    copied phone backup works too."""
+    if not deep:
+        return [root]
+    out = []
+    base_depth = root.rstrip("\\/").count(os.sep)
+    for dirpath, dirnames, _files in os.walk(root):
+        if dirpath.count(os.sep) - base_depth >= 4:
+            dirnames[:] = []
+        out.append(dirpath)
+        if len(out) > 500:
+            break
+    return out
+
+def load_all_games(remotes, deep=False):
+    """Returns (games, total_files, missing) where `missing` = games the game's own archive
+    index lists but whose save file isn't present (e.g. never synced by Steam Cloud)."""
+    games = {}          # dedupe key -> game
     total_files = 0
+    index_ids = set()
     for rem, acct in remotes:
         owner_sid = None
         try:
             owner_sid = STEAM64_BASE + int(acct)
         except Exception:
             pass
-        local_files = glob.glob(os.path.join(rem, "local_*"))
-        online_files = glob.glob(os.path.join(rem, "*.nakama-*"))
-        for fp in local_files + online_files:
-            total_files += 1
+        for folder in save_folders(rem, deep):
+            index = load_archive_index(folder)
+            index_ids.update(index)
             try:
-                pt = decrypt_save(open(fp, "rb").read())
-                if not pt:
-                    continue
-                d = json.loads(pt.decode("utf-8"))
-                if "Scores" not in d or "Players" not in d:
-                    continue
-                kind = "online" if ".nakama-" in os.path.basename(fp) else "solo"
-                mtime = os.path.getmtime(fp)
-                g = normalize_game(d, mtime, owner_sid, kind)
-                key = g["id"] or os.path.basename(fp).split(".nakama-")[0]
-                prev = games.get(key)
-                # keep finished over unfinished; otherwise the newer file
-                if (prev is None
-                        or (g["finished"] and not prev["finished"])
-                        or (g["finished"] == prev["finished"] and mtime > prev["_mtime"])):
-                    g["_mtime"] = mtime
-                    games[key] = g
+                names = sorted(os.listdir(folder))
             except Exception:
                 continue
+            for name in names:
+                fp = os.path.join(folder, name)
+                if name == "Settings" or not os.path.isfile(fp) or not _looks_like_save(fp):
+                    continue
+                known = name.startswith("local_") or ".nakama-" in name
+                try:
+                    pt = decrypt_save(open(fp, "rb").read())
+                    if not pt:
+                        if known: total_files += 1
+                        continue
+                    d = json.loads(pt.decode("utf-8"))
+                    if not isinstance(d, dict) or "Scores" not in d or "Players" not in d:
+                        if known: total_files += 1
+                        continue
+                    total_files += 1
+                    kind = "online" if ".nakama-" in name else "solo"
+                    mtime = os.path.getmtime(fp)
+                    when = (date_from_filename(name)
+                            or index.get(name) or index.get(str(d.get("MatchId") or ""))
+                            or datetime.datetime.fromtimestamp(mtime))
+                    g = normalize_game(d, when, owner_sid, kind)
+                    key = g["id"] or name.split(".nakama-")[0]
+                    prev = games.get(key)
+                    # keep finished over unfinished; otherwise the newer file
+                    if (prev is None
+                            or (g["finished"] and not prev["finished"])
+                            or (g["finished"] == prev["finished"] and mtime > prev["_mtime"])):
+                        g["_mtime"] = mtime
+                        g["_file"] = name
+                        games[key] = g
+                except Exception:
+                    continue
     out = []
+    have = set()
     for g in games.values():
         g.pop("_mtime", None)
+        have.add(g.pop("_file", ""))
+        have.add(g["id"])
         out.append(g)
     out.sort(key=lambda g: g["date"])
-    return out, total_files
+    missing = len([m for m in index_ids if m not in have])
+    return out, total_files, missing
 
 # ============================ HTML dashboard =================================
 HTML_TEMPLATE = r"""<!doctype html>
@@ -1603,10 +1722,28 @@ function render(){
   $('#foot').innerHTML =
     `Wingspan Preserve Archive Viewer · ${DATA.totalGames} games · offline &amp; private · your data never leaves this machine.`+
     `<br>Bird art &amp; card data from <b>Wingsearch</b> by navarog (GPLv3) — illustrations are “Unofficial Fan Art”, not official game artwork.`+
+    (DATA.indexMissing>0 ? `<br>Your in-game archive lists <b>${DATA.indexMissing}</b> more game${DATA.indexMissing===1?'':'s'} whose save file${DATA.indexMissing===1?' is':'s are'} not in this folder (usually Steam Cloud never synced ${DATA.indexMissing===1?'it':'them'} to this PC).` : '')+
+    `<span id="pickfoot"></span>`+
     `<br>Free software under the <b>GPLv3</b>, with no warranty. Source: ${SOURCE_URL}`+
     `<br><span class="muted">Unofficial fan tool — not affiliated with or endorsed by Stonemaier Games or Monster Couch. `+
     `“Wingspan” and all game content belong to their respective owners.</span>`;
+  armPicker();
 }
+
+// "Open another save folder…" — only inside the app window (the pywebview bridge exists
+// there); a report opened in a normal browser has no such link.
+function armPicker(){
+  const el=$('#pickfoot');
+  if(!el || el.dataset.on || !(window.pywebview && window.pywebview.api && window.pywebview.api.choose_folder)) return;
+  el.dataset.on='1';
+  el.innerHTML='<br><a href="#" id="pickfolder">Open a different save folder…</a> <span id="pickmsg"></span>';
+  $('#pickfolder').addEventListener('click',e=>{
+    e.preventDefault();
+    $('#pickmsg').textContent='';
+    window.pywebview.api.choose_folder().then(r=>{ if(r && !r.ok && r.msg) $('#pickmsg').innerHTML='— '+r.msg; });
+  });
+}
+addEventListener('pywebviewready',armPicker);
 
 // tab switching (both views are always rendered; we just toggle visibility)
 $('#tabs').addEventListener('click',e=>{
@@ -1697,17 +1834,39 @@ ERROR_TEMPLATE = r"""<!doctype html><html><head><meta charset="utf-8"><title>Win
   <div style="font-size:44px">🐦</div>
   <h1>__TITLE__</h1>
   <p>__MSG__</p>
-</div></body></html>"""
+  <p id="pickwrap" style="display:none"><button id="pick">Choose save folder…</button></p>
+  <p id="pickmsg"></p>
+</div>
+<style>
+  button{font:inherit;font-size:15px;padding:10px 20px;border-radius:10px;border:0;cursor:pointer;
+    background:#3f7d4e;color:#fff;margin-top:6px;} button:disabled{opacity:.6;cursor:default;}
+</style>
+<script>
+(function(){
+  var wrap=document.getElementById('pickwrap'), btn=document.getElementById('pick'),
+      msg=document.getElementById('pickmsg');
+  function arm(){ if(window.pywebview && window.pywebview.api && window.pywebview.api.choose_folder) wrap.style.display=''; }
+  window.addEventListener('pywebviewready', arm); arm();
+  btn.onclick=function(){
+    btn.disabled=true; msg.textContent='';
+    window.pywebview.api.choose_folder().then(function(r){
+      if(!r || !r.ok){ btn.disabled=false; if(r && r.msg) msg.innerHTML=r.msg; }
+    }, function(){ btn.disabled=false; });
+  };
+})();
+</script>
+</body></html>"""
 
 def build_error_html(title, msg):
     return ERROR_TEMPLATE.replace("__TITLE__", title).replace("__MSG__", msg)
 
-def build_html(games, total_files):
+def build_html(games, total_files, missing=0):
     generated = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     payload = {
         "generatedAt": generated,
         "totalGames": len(games),
         "totalFiles": total_files,
+        "indexMissing": missing,
         "scoreCats": [name for _, name in SCORE],
         "habitats": [name for _, name in HABITATS],
         "birdData": {str(i): r for i, r in BIRD_DATA.items()},
@@ -1743,7 +1902,61 @@ def resolve_remotes(arg):
         return []
     return find_remote_dirs()
 
-def open_window(html=None, file_path=None):
+def _file_url(path):
+    return "file:///" + os.path.abspath(path).replace("\\", "/")
+
+MSG_NO_FOLDER = ("Couldn't find your Wingspan save folder automatically. Make sure Steam is "
+                 "installed and you've played Wingspan at least once, then run this again. "
+                 "Or choose the folder yourself: it's <code>Steam\\userdata\\&lt;number&gt;\\1054490\\remote</code> "
+                 "inside your Steam install (not the game's install folder). A save folder "
+                 "copied from your phone works too.")
+MSG_NO_GAMES = ("Found a save folder but couldn't read any games from it. Check that it's "
+                "the folder that holds files named <code>local_…</code>, or choose another one. "
+                "If Wingspan recently updated, its save encryption may have changed and this "
+                "tool would need an update.")
+
+def generate_report(remotes, out_arg, deep=False):
+    """Read games and write the report. Returns (report_path, None) or (None, (title, msg))."""
+    print("  Reading and decrypting games...", flush=True)
+    games, total_files, missing = load_all_games(remotes, deep)
+    print("  Decrypted %d games from %d save files." % (len(games), total_files))
+    if missing:
+        print("  Archive index lists %d game(s) with no save file in this folder." % missing)
+    if not games:
+        return None, ("No games could be read", MSG_NO_GAMES)
+    finished = sum(1 for g in games if g["finished"])
+    owned = [g for g in games if g["ownerIndex"] is not None and g["finished"]]
+    wins = sum(1 for g in owned if g["players"][g["ownerIndex"]]["rank"] == 1)
+    print("  Finished games: %d   Your wins: %d/%d" % (finished, wins, len(owned)))
+    print("  Date range: %s to %s" % (games[0]["date"][:10], games[-1]["date"][:10]))
+    html = build_html(games, total_files, missing)
+    out = _write_report(html, out_arg)
+    print("  Report written to:", out)
+    return out, None
+
+class Api:
+    """Exposed to the window's JavaScript as window.pywebview.api."""
+    def __init__(self, out_arg=None):
+        self._out = out_arg
+    def choose_folder(self):
+        try:
+            import webview
+            win = webview.windows[0]
+            res = win.create_file_dialog(webview.FOLDER_DIALOG)
+            if not res:
+                return {"ok": False, "msg": ""}
+            folder = res[0] if isinstance(res, (list, tuple)) else res
+            print("\n  Folder chosen:", folder)
+            out, err = generate_report(resolve_remotes(folder), self._out, deep=True)
+            if err:
+                return {"ok": False, "msg": err[1]}
+            win.load_url(_file_url(out))
+            return {"ok": True}
+        except Exception as e:
+            print("  choose_folder failed:", e)
+            return {"ok": False, "msg": "Something went wrong reading that folder."}
+
+def open_window(html=None, file_path=None, out_arg=None):
     """Show the dashboard in a native window; fall back to the browser if unavailable.
 
     A file_path is loaded via a file:// URL (no size limit). Passing html= uses
@@ -1752,20 +1965,20 @@ def open_window(html=None, file_path=None):
     """
     try:
         import webview
+        api = Api(out_arg)
         if file_path:
-            url = "file:///" + os.path.abspath(file_path).replace("\\", "/")
-            webview.create_window("Wingspan Preserve Archive", url=url,
-                                  width=1240, height=900, min_size=(900, 640))
+            webview.create_window("Wingspan Preserve Archive", url=_file_url(file_path),
+                                  js_api=api, width=1240, height=900, min_size=(900, 640))
         else:
             webview.create_window("Wingspan Preserve Archive", html=html,
-                                  width=1240, height=900, min_size=(900, 640))
+                                  js_api=api, width=1240, height=900, min_size=(900, 640))
         webview.start()
         return True
     except Exception as e:
         print("  (native window unavailable: %s)" % (str(e)[:90]))
         if file_path:
             print("  Opening in your default browser instead...")
-            webbrowser.open("file:///" + os.path.abspath(file_path).replace("\\", "/"))
+            webbrowser.open(_file_url(file_path))
         return False
 
 def _write_report(html, out_arg):
@@ -1796,39 +2009,24 @@ def main():
     remotes = resolve_remotes(args.remote)
     if not remotes:
         print("\n  Could not find your Wingspan save folder automatically.")
-        msg = ("Couldn't find your Wingspan save folder automatically. Make sure Steam is "
-               "installed and you've played Wingspan at least once, then run this again. "
-               "Advanced: drag your <code>...\\1054490\\remote</code> folder onto this program.")
         if not args.html:
-            open_window(build_error_html("No save folder found", msg))
+            open_window(build_error_html("No save folder found", MSG_NO_FOLDER), out_arg=args.out)
         _pause(); return
     for rem, acct in remotes:
         print("  Save folder:", rem, ("(account %s)" % acct) if acct else "")
 
-    print("  Reading and decrypting games...", flush=True)
-    games, total_files = load_all_games(remotes)
-    print("  Decrypted %d games from %d save files." % (len(games), total_files))
-    if not games:
-        msg = ("Found your save folder but couldn't read any games from it. If Wingspan "
-               "recently updated, its save encryption may have changed and this tool would "
-               "need an update.")
+    # A folder given on the command line / dragged onto the exe is searched a few levels
+    # deep (parent folders, phone backups); auto-detected Steam folders are read as-is.
+    out, err = generate_report(remotes, args.out, deep=bool(args.remote))
+    if err:
         if not args.html:
-            open_window(build_error_html("No games could be read", msg))
+            open_window(build_error_html(*err), out_arg=args.out)
         _pause(); return
-
-    finished = sum(1 for g in games if g["finished"])
-    owned = [g for g in games if g["ownerIndex"] is not None and g["finished"]]
-    wins = sum(1 for g in owned if g["players"][g["ownerIndex"]]["rank"] == 1)
-    print("  Finished games: %d   Your wins: %d/%d" % (finished, wins, len(owned)))
-
-    html = build_html(games, total_files)
-    out = _write_report(html, args.out)
-    print("  Report written to:", out)
 
     if args.html:
         _pause(); return
     print("  Opening dashboard...")
-    open_window(file_path=out)
+    open_window(file_path=out, out_arg=args.out)
 
 def _pause():
     try:

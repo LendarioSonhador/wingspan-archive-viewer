@@ -73,9 +73,27 @@ the complete source is available so you can read it and run it yourself.
 
 IT CAN'T FIND MY GAMES
 ----------------------
-If auto-detection fails, drag your Steam "remote" folder onto the .exe. It's at:
-  C:\Program Files (x86)\Steam\userdata\<your-id>\1054490\remote
-(the folder that contains files named "local_...").
+If auto-detection fails, the window shows a "Choose save folder..." button. Pick
+your Steam "remote" folder (or drag it onto the .exe). It's at:
+  <Steam>\userdata\<your-id>\1054490\remote
+(the folder that contains files named "local_..."). Note: that's inside the
+STEAM install, e.g. C:\Program Files (x86)\Steam - NOT the game's own install
+folder, so Steam's "Browse local files" won't take you there.
+
+Once the dashboard is open, "Open a different save folder..." at the bottom of
+the page lets you switch folders (for example a second PC's saves you copied).
+
+PHONE SAVES: the mobile versions reportedly store games unencrypted (not yet
+tested with a real phone save). Copy your phone's
+Wingspan save folder to this PC and choose it with the button above.
+
+
+SOME OF MY GAMES ARE MISSING
+----------------------------
+The game keeps its own list of archived games. If that list mentions games whose
+save files aren't on this PC (usually because Steam Cloud never synced them),
+the footer of the dashboard tells you how many. The viewer can only show games
+whose files it can read.
 
 
 IF IT STOPS WORKING AFTER A GAME UPDATE

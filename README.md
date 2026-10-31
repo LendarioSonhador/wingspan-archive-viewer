@@ -71,11 +71,26 @@ Wingspan keeps archived games in Steam Cloud userdata, not the install folder:
 ```
 
 `local_*` files are solo/local games, `*.nakama-*` are online games. The app finds these
-automatically; if that fails, drag the `remote` folder onto the .exe.
+automatically; if that fails, it shows a **Choose save folder…** button (or drag the
+`remote` folder onto the .exe). Note that `userdata` sits under the **Steam client**
+install, not the game's library folder, so "Browse local files" in Steam won't get you
+there.
 
-The files are base64 with a short plaintext header followed by a DES-CBC encrypted JSON
-game state. The app decrypts them in memory to read your scores. It has a pure-Python
-decryption fallback so it works with no extra libraries installed.
+**Phone saves** (Android/iOS) are reportedly stored unencrypted (not yet tested against a
+real phone save). Copy the save folder to your PC and
+choose it; the app searches a picked folder a few levels deep and reads plain JSON saves
+as well as encrypted ones.
+
+The files are base64 with a short plaintext header (`V@1H@11@N` plus a format-version
+digit) followed by a DES-CBC encrypted JSON game state. The app decrypts them in memory to
+read your scores. It has a pure-Python decryption fallback so it works with no extra
+libraries installed.
+
+**Game dates** come from the filename, not the file's modified time: `local_<n>` is a
+Windows FILETIME recording when the game started. (Modified times get reset whenever Steam
+Cloud re-downloads your saves, which used to pile older games onto a single day.) Online
+games take their date from the game's own archive index, the `Settings` file. Only the two
+game lists are read from that file; it also holds account details, which the app ignores.
 
 ---
 
